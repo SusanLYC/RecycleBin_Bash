@@ -1,0 +1,109 @@
+#!/bin/bash
+
+# Set recyclebin and .restore location
+recyclebin="$HOME/recyclebin"
+restore="$HOME/recyclebin/.restore.info"
+
+# Function to check for overwrite
+check_overwrite() {
+    local file_path="$1"
+    local file_name="$2"
+
+    if [ -e "$file_path" ]; then
+        read -p "File $file_name already exists, overwrite? (Y/N): " confirm <&3
+        if [[ "$confirm" != [yY] ]]; then
+            return 1
+        else
+            rm -f "$file_path"
+        fi
+    fi
+    return 0
+}
+
+# 1. No file name provided: error exit status 2
+if [ $# -eq 0 ]; then
+    echo "Error: no file name provided"
+    exit 2
+fi
+
+# Check if file in recyclebin
+file_info=$(grep "^$1:" "$restore")
+[ -z "$file_info" ] && echo "Error: $1 not found in recycle bin" && exit 1
+
+# Open file descriptor 3 for terminal input
+exec 3<&0
+
+# Handle multiple copies of the same file
+count=$(echo "$file_info" | wc -l)
+if [ $count -gt 1 ]; then
+    echo "Info: $count copies of $1 found in recycle bin"
+    echo "$file_info" | nl # List all copies with numbering
+
+    read -p "Enter 'A' to restore all or the number of the copy to restore: " choice <&3
+    if [[ "$choice" == [aA] ]]; then
+        while read -r file_entry; do
+            file_path=$(echo "$file_entry" | cut -d: -f2-)
+            file_dir=$(dirname "$file_path")
+            if check_overwrite "$file_path" "$1"; then
+                mkdir -p "$file_dir"
+                ln "$recyclebin/$1" "$file_path"
+                echo $file_entry
+                temp_file=$(mktemp)
+                grep -Fv "$file_entry" "$restore" > "$temp_file"
+                mv "$temp_file" "$restore"
+                echo "Restored $1 as $file_path"
+            else
+                echo "Skipped $file_path"
+            fi
+        done <<< "$file_info"
+    fi
+
+    if [[ $choice =~ ^[0-9]+$ ]]; then
+        file_info=$(echo "$file_info" | sed -n "${choice}p")
+        echo "Restoring copy $choice: $file_info"
+        file_path=$(echo "$file_info" | sed -n "${choice}p" | cut -d: -f2-)
+        file_dir=$(dirname "$file_path")
+        if check_overwrite "$file_path" "$1"; then
+            mkdir -p "$file_dir"
+            ln "$recyclebin/$1" "$file_path"
+            echo $file_info
+            temp_file=$(mktemp)
+            grep -Fv "$file_info" "$restore" > "$temp_file"
+            mv "$temp_file" "$restore"
+            echo "Restored $1 as $file_path"
+        else
+            echo "Skipped $file_path"
+        fi
+    fi
+
+    if [[ ! "$choice" =~ ^[aA0-9]+$ ]]; then
+        echo "Invalid choice: $choice, exit restore"
+        exit 1
+    fi
+else 
+    # If only one copy of the file
+    file_path=$(echo "$file_info" | cut -d: -f2-)
+
+    if check_overwrite "$file_path" "$1"; then
+        mkdir -p "$(dirname "$file_path")"
+        ln "$recyclebin/$1" "$file_path"
+        grep -v "$file_info" "$restore" > "$restore"
+        echo "Restored $1 as $file_path"
+    else
+        echo "Skipped $file_path"
+    fi
+fi 
+
+# Close file descriptor 3
+exec 3<&-
+
+# Delete from recyclebin if no more entries in .restore.info
+remaining_entry=$(grep "$1" "$restore")
+if [ -z "$remaining_entry" ]; then
+    rm -f "$recyclebin/$1"
+    echo "No more copies of $1 in recyclebin."
+else
+    echo "Copies of $1 still in recyclebin."
+fi
+
+exit 0
